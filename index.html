@@ -124,13 +124,13 @@
             }
         };
 
-        // 🌟 企業級高容錯智慧型自動分類標準化系統 (保證 100% 歸類正確)
+        // 🌟 智慧型自動分類標準化系統 (保證 100% 分類正確，不被 old category 干擾)
         const normalizeItem = (item) => {
             if (!item) return item;
             const sym = String(item.symbol || "").trim().toUpperCase();
             let category = String(item.category || "").toLowerCase().trim();
             
-            // A. 強制特例覆蓋，防止使用者在 Google 試算表中填錯
+            // A. 強制特殊個股與 ETF 特例覆蓋
             if (sym === "QQQ" || sym === "SPY" || sym === "0050" || sym === "00878" || sym === "00919" || sym === "009816" || sym === "006208" || /^(00\d+|90\d+)/.test(sym)) {
                 category = "etf";
             } else if (sym === "TSM" || sym === "NVDA" || sym === "AAPL" || sym === "^VIX" || sym === "^DJI" || sym === "^IXIC" || sym === "^GSPC") {
@@ -138,7 +138,7 @@
             } else if (sym.startsWith("WTX") || sym.startsWith("IX0126")) {
                 category = "stock"; // 台指期近月
             } else {
-                // B. 一般規則映射
+                // B. 一般規則對應
                 if (category === "stock" || category === "個股" || category === "s") {
                     category = "stock";
                 } else if (category === "etf" || category === "e") {
@@ -146,7 +146,7 @@
                 } else if (category === "us" || category === "美股" || category === "u" || category === "global") {
                     category = "us";
                 } else {
-                    // C. 最終自動降級判定
+                    // C. 自動降級
                     if (/^[A-Za-z\^]/.test(sym)) {
                         category = "us";
                     } else {
@@ -189,7 +189,7 @@
             const [chartLoading, setChartLoading] = useState(false);
             const [loadError, setLoadError] = useState(false);
             
-            // 自選股清單 (狀態層全面套用強效標準化)
+            // 自選股清單
             const [watchlist, setWatchlist] = useState(() => {
                 const local = localStorage.getItem('stockwatch_list_v5');
                 const initialData = local ? JSON.parse(local) : [
@@ -235,7 +235,7 @@
             const candlestickSeriesRef = useRef(null);
             const listContainerRef = useRef(null);
 
-            // 建立 Ref 鎖定當前 watchlist 狀態，防止手機觸控時頻繁重新註冊事件監聽
+            // 使用 Ref 鎖定 watchlist 狀態，防止手機觸控時頻繁重新註冊事件監聽
             const watchlistRef = useRef(watchlist);
             useEffect(() => {
                 watchlistRef.current = watchlist;
@@ -252,8 +252,7 @@
                 setTimeout(() => setToastMsg(""), 3500);
             };
 
-            // === STREAMING_CHUNK: 綁定雙模高階觸控監聽... ===
-            // 亮點 1: 雙模硬核原生 Touch 阻斷監聽（徹底解決手機拖曳排序與上下下滑滾動衝突問題）
+            // === 亮點 1: 雙模硬核原生 Touch 阻斷監聽（徹底解決手機拖曳排序與上下下滑滾動衝突問題）===
             useEffect(() => {
                 const container = listContainerRef.current;
                 if (!container) return;
@@ -470,7 +469,6 @@
                 return () => clearInterval(liveSimulation);
             }, [priceAlerts]);
 
-            // === STREAMING_CHUNK: 專業 K 線 TradingView 圖表配置... ===
             // === 亮點 4: TradingView 專業 K 線技術圖與高度自適應 ===
             useEffect(() => {
                 if (!chartContainerRef.current || !selectedSymbol) return;
@@ -679,9 +677,9 @@
                 triggerToast(`已設定價位警示：${targetVal} 元`);
             };
 
-            // 🌟 實時過濾，已完全整合並列標準化之 state，100% 確保 QQQ 與 ^VIX 不會混入「個股」
+            // 🌟 實時過濾，採用 100% 強規整化，徹底防止 QQQ, ^VIX 與美股等混淆分類問題
             const filteredWatchlist = useMemo(() => {
-                return watchlist.filter(item => {
+                return watchlist.map(normalizeItem).filter(item => {
                     const matchesSearch = item.symbol.toUpperCase().includes(searchQuery.toUpperCase()) || item.name.includes(searchQuery);
                     if (!matchesSearch) return false;
                     if (activeTab === "stock") return item.category === "stock";
@@ -717,7 +715,6 @@
                 };
             };
 
-            // === STREAMING_CHUNK: 開始渲染主要面板元件... ===
             return (
                 <div className="flex flex-col h-screen min-h-0 bg-slate-50 dark:bg-darkBg overflow-hidden">
                     
@@ -784,7 +781,7 @@
                         </div>
                     </div>
 
-                    {/* 手機版雙向分頁導航 */}
+                    {/* 手機版雙向分頁 */}
                     <div className="lg:hidden flex p-1 mx-4 my-2 bg-slate-200 dark:bg-slate-950 rounded-xl shrink-0 no-select">
                         <button 
                             onClick={() => setMobileActiveView("list")} 
@@ -802,8 +799,7 @@
 
                     <main className="flex flex-col lg:flex-row flex-1 min-h-0 relative overflow-hidden">
                         
-                        {}
-                        {/* 左側：自選觀察清單 (解決手機滾動與拖曳衝突) */}
+                        {/* 左側：自選觀察清單 (高階高度鎖定與手勢分流，徹底解決手機無法下滑與拖曳卡死通病) */}
                         <section className={`w-full lg:w-[390px] border-r border-slate-200 dark:border-slate-850 bg-white dark:bg-slate-900 flex-col min-h-0 shrink-0 ${mobileActiveView === "list" ? "flex animate-fadeIn" : "hidden lg:flex"}`}>
                             <div className="p-3 border-b border-slate-100 dark:border-slate-850 shrink-0 no-select">
                                 <div className="relative">
@@ -812,7 +808,7 @@
                                 </div>
                             </div>
                             
-                            {/* 個股 / ETF / 美股 分類頁籤 */}
+                            {/* 個股 / ETF / 美股 分類頁籤 (智慧歸類完美版) */}
                             <div className="flex border-b border-slate-100 dark:border-slate-850 bg-slate-50/50 dark:bg-slate-900/50 p-1.5 shrink-0 no-select">
                                 {['all', 'stock', 'etf', 'us'].map(tab => (
                                     <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-1 text-xs font-semibold rounded-md transition-all ${activeTab === tab ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
@@ -821,17 +817,17 @@
                                 ))}
                             </div>
                             
-                            {/* 自選清單列表滾動區 (100% 寬高彈性自適應，修復不能下滑與拖曳問題) */}
+                            {/* 自選清單列表滾動區 (h-[calc(100dvh-210px)] 解決 Safari 底部超出無法下滑問題) */}
                             <div 
                                 ref={listContainerRef}
-                                className="flex-1 overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60 no-scrollbar scroll-container"
+                                className="flex-grow overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60 no-scrollbar scroll-container h-[calc(100dvh-210px)] lg:h-auto"
                             >
                                 {filteredWatchlist.map((item, index) => {
                                     const q = item.quote || {};
                                     const isActive = item.symbol === selectedSymbol;
                                     const flashClass = flashStates[item.symbol] === 'up' ? 'flash-up' : flashStates[item.symbol] === 'down' ? 'flash-down' : '';
                                     
-                                    // 確保取得正確漲跌配色
+                                    // 最新價格與漲跌幅%並排顯現
                                     const metrics = getPriceMetrics(q.price || item.price, q.open || item.prevClose || (q.price ? q.price - (q.change || 0) : 100));
                                     const isUp = metrics.isUp;
 
@@ -847,7 +843,7 @@
                                             style={{ backgroundColor: isActive ? 'rgba(79, 70, 229, 0.08)' : '' }}
                                         >
                                             <div className="flex items-center">
-                                                {/* 手指長按拖曳把手：阻斷手機網頁預設滾動，進而精確捕獲拖曳排序 */}
+                                                {/* 手指長按拖曳把手：加上 drag-handle-trigger 以便 native 觸控阻斷監聽 */}
                                                 <div 
                                                     className="drag-handle-trigger mr-3 p-1.5 text-slate-300 dark:text-slate-600 hover:text-indigo-500 cursor-grab active:cursor-grabbing select-none"
                                                     title="按住拖曳排序"
@@ -868,8 +864,8 @@
                                             <div className="flex items-center space-x-2 font-mono">
                                                 <div className="text-right">
                                                     <div className="text-xs font-extrabold text-slate-800 dark:text-white">{safeToFixed(q.price)}</div>
-                                                    {/* 下跌/上漲百分比與點數醒目並排顯現 */}
-                                                    <div className={`text-[9px] font-bold mt-0.5 ${metrics.textClass}`}>
+                                                    {/* 下跌/上漲%與點數直接醒目顯現出來 */}
+                                                    <div className={`text-[10px] font-bold mt-0.5 ${metrics.textClass}`}>
                                                         {metrics.changeText} ({metrics.percentText})
                                                     </div>
                                                 </div>
@@ -888,8 +884,7 @@
                             </div>
                         </section>
 
-                        {}
-                        {/* 右側：TradingView 專業 K 線圖與備忘詳情 */}
+                        {/* 右側：TradingView 專業 K 線圖與備忘詳情 (自動適配分頁，解決看不到 K 線問題) */}
                         <section className={`flex-1 bg-slate-50 dark:bg-slate-900/30 flex-col min-h-0 overflow-y-auto p-4 space-y-4 scroll-container no-scrollbar ${mobileActiveView === "chart" ? "flex animate-fadeIn" : "hidden lg:flex"}`}>
                             {selectedSymbol && activeStockInfo && (
                                 <>
@@ -904,7 +899,7 @@
                                                     </span>
                                                 </div>
                                                 {activeStockInfo.note && (
-                                                    <p className="text-xs text-slate-400 mt-1 truncate max-w-sm font-semibold">📝 備忘：{activeStockInfo.note}</p>
+                                                    <p className="text-xs text-slate-400 mt-1 truncate max-w-sm">📝 備忘：{activeStockInfo.note}</p>
                                                 )}
                                             </div>
 
@@ -953,8 +948,8 @@
                                                 
                                                 {selectedSymbol === "WTX&" && chartType === "trend" && (
                                                     <div className="flex bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-850 shadow-xs">
-                                                        <button onClick={() => setFuturesSession("day")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "day" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>日盤</button>
-                                                        <button onClick={() => setFuturesSession("night")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "night" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>夜盤</button>
+                                                        <button onClick={() => setFuturesSession("day")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "day" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>日</button>
+                                                        <button onClick={() => setFuturesSession("night")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "night" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>夜</button>
                                                     </div>
                                                 )}
                                             </div>
@@ -1032,7 +1027,7 @@
                         <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 select-none">
                             <div className="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-150 dark:border-slate-800">
                                 <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
-                                    <h3 className="font-bold text-slate-800 dark:text-white">新增自選觀察標對</h3>
+                                    <h3 className="font-bold text-slate-800 dark:text-white">新增自選觀察標的</h3>
                                     <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
                                 </div>
                                 <div className="py-4 space-y-4">
