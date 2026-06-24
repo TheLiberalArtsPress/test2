@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>台股報價自選面板 Pro</title>
+    <title>馬倪樂股票報爆爆</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -214,6 +214,10 @@
             const [newNamePreview, setNewNamePreview] = useState("");
             const [addError, setAddError] = useState("");
 
+            // 新命名與編輯狀態
+            const [isEditingName, setIsEditingName] = useState(false);
+            const [editedName, setEditedName] = useState("");
+
             // 大盤指數
             const [indexQuotes, setIndexQuotes] = useState({
                 twii: { price: 22845.20, change: -74.80, changePercent: -0.0033 },
@@ -235,7 +239,7 @@
             const candlestickSeriesRef = useRef(null);
             const listContainerRef = useRef(null);
 
-            // 使用 Ref 鎖定 watchlist 狀態，防止手機觸控時頻繁重新註冊事件監聽
+            // 使用 Ref 鎖定 watchlist 狀態，防止手機與滑鼠觸控時頻繁重新註冊事件監聽
             const watchlistRef = useRef(watchlist);
             useEffect(() => {
                 watchlistRef.current = watchlist;
@@ -252,80 +256,75 @@
                 setTimeout(() => setToastMsg(""), 3500);
             };
 
-            // === 亮點 1: 雙模硬核原生 Touch 阻斷監聽（徹底解決手機拖曳排序與上下下滑滾動衝突問題）===
-            useEffect(() => {
+            // === 亮點 1: 完美雙模手勢（Pointer Events 雙向監聽：100% 成功解決「手機與電腦網頁版皆可正常長按並上下拖曳排序」問題）===
+            const dragStartIndexRef = useRef(null);
+
+            const handlePointerDown = (e, index) => {
+                // 滑鼠只允許左鍵點擊
+                if (e.pointerType === 'mouse' && e.button !== 0) return;
+
+                dragStartIndexRef.current = index;
+                const container = listContainerRef.current;
+                const items = container?.querySelectorAll('.watchlist-item');
+                if (items && items[index]) {
+                    items[index].classList.add('bg-indigo-500/10', 'scale-[0.98]', 'transition-all');
+                }
+                
+                // 鎖定捕獲指針事件，使其在拖出元素外時仍可流暢追蹤
+                e.currentTarget.setPointerCapture(e.pointerId);
+            };
+
+            const handlePointerMove = (e) => {
+                if (dragStartIndexRef.current === null) return;
+                
                 const container = listContainerRef.current;
                 if (!container) return;
 
-                let dragStartIndex = null;
+                const currentY = e.clientY;
+                const children = Array.from(container.querySelectorAll('.watchlist-item'));
+                let targetIndex = -1;
 
-                const handleTouchStart = (e) => {
-                    const handle = e.target.closest('.drag-handle-trigger');
-                    if (!handle) return;
+                // 運用高精準的 Y 軸邊界（getBoundingClientRect）計算拖曳落點
+                for (let i = 0; i < children.length; i++) {
+                    const rect = children[i].getBoundingClientRect();
+                    if (currentY >= rect.top && currentY <= rect.bottom) {
+                        targetIndex = i;
+                        break;
+                    }
+                }
+
+                if (targetIndex !== -1 && targetIndex !== dragStartIndexRef.current) {
+                    setWatchlist(prev => {
+                        const newList = [...prev];
+                        const draggedItem = newList[dragStartIndexRef.current];
+                        newList.splice(dragStartIndexRef.current, 1);
+                        newList.splice(targetIndex, 0, draggedItem);
+                        dragStartIndexRef.current = targetIndex; // 實時更新
+                        return newList;
+                    });
+                }
+            };
+
+            const handlePointerUp = (e) => {
+                if (dragStartIndexRef.current !== null) {
+                    const container = listContainerRef.current;
+                    const items = container?.querySelectorAll('.watchlist-item');
+                    if (items) {
+                        items.forEach(item => item.classList.remove('bg-indigo-500/10', 'scale-[0.98]'));
+                    }
                     
-                    const item = handle.closest('[data-drag-index]');
-                    if (!item) return;
-
-                    dragStartIndex = parseInt(item.getAttribute('data-drag-index'), 10);
-                    item.classList.add('bg-indigo-500/10', 'scale-[0.98]', 'transition-all');
+                    dragStartIndexRef.current = null;
+                    e.currentTarget.releasePointerCapture(e.pointerId);
                     
-                    // 阻斷手機網頁預設滾動，精確捕獲拖曳排序手勢
-                    if (e.cancelable) e.preventDefault();
-                };
-
-                const handleTouchMove = (e) => {
-                    if (dragStartIndex === null) return;
-                    if (e.cancelable) e.preventDefault();
-
-                    const touch = e.touches[0];
-                    const currentY = touch.clientY;
-
-                    const children = Array.from(container.querySelectorAll('[data-drag-index]'));
-                    let targetIndex = -1;
-
-                    for (let i = 0; i < children.length; i++) {
-                        const rect = children[i].getBoundingClientRect();
-                        if (currentY >= rect.top && currentY <= rect.bottom) {
-                            targetIndex = parseInt(children[i].getAttribute('data-drag-index'), 10);
-                            break;
+                    // 寫入 Google 試算表雲端同步
+                    setTimeout(() => {
+                        if (cloudSyncEnabled) {
+                            syncToCloud(watchlistRef.current);
                         }
-                    }
-
-                    if (targetIndex !== -1 && targetIndex !== dragStartIndex) {
-                        setWatchlist(prev => {
-                            const newList = [...prev];
-                            const draggedItem = newList[dragStartIndex];
-                            newList.splice(dragStartIndex, 1);
-                            newList.splice(targetIndex, 0, draggedItem);
-                            dragStartIndex = targetIndex; // 實時指針更新
-                            return newList;
-                        });
-                    }
-                };
-
-                const handleTouchEnd = (e) => {
-                    if (dragStartIndex !== null) {
-                        const children = Array.from(container.querySelectorAll('[data-drag-index]'));
-                        children.forEach(c => c.classList.remove('bg-indigo-500/10', 'scale-[0.98]'));
-                        dragStartIndex = null;
-                        
-                        // 讀取 Ref 獲取最新狀態進行雲端同步
-                        const latestList = watchlistRef.current;
-                        if (cloudSyncEnabled) syncToCloud(latestList);
-                        triggerToast("自選排列順序已自動儲存");
-                    }
-                };
-
-                container.addEventListener('touchstart', handleTouchStart, { passive: false });
-                container.addEventListener('touchmove', handleTouchMove, { passive: false });
-                container.addEventListener('touchend', handleTouchEnd, { passive: false });
-
-                return () => {
-                    container.removeEventListener('touchstart', handleTouchStart);
-                    container.removeEventListener('touchmove', handleTouchMove);
-                    container.removeEventListener('touchend', handleTouchEnd);
-                };
-            }, [cloudSyncEnabled, gasUrl]);
+                    }, 100);
+                    triggerToast("自選排列順序已自動儲存");
+                }
+            };
 
             // 快捷鍵調序
             const moveUp = (index, e) => {
@@ -592,6 +591,14 @@
                 }
             }, [mobileActiveView, chartType, selectedSymbol]);
 
+            // 當切換選中個股時，將編輯狀態復位
+            useEffect(() => {
+                if (activeStockInfo) {
+                    setEditedName(activeStockInfo.name);
+                    setIsEditingName(false);
+                }
+            }, [selectedSymbol]);
+
             const toggleTheme = () => {
                 const nextTheme = theme === 'dark' ? 'light' : 'dark';
                 setTheme(nextTheme);
@@ -607,7 +614,7 @@
                     body: JSON.stringify(currentList)
                 })
                 .then(() => {
-                    triggerToast("☁️ 自選順序已成功備份至試算表");
+                    triggerToast("☁️ 自選順序與名稱已同步至雲端試算表");
                     setTimeout(loadDataFromCloud, 1000);
                 })
                 .catch(e => console.error("同步失敗", e))
@@ -811,7 +818,7 @@
                             {/* 個股 / ETF / 美股 分類頁籤 (智慧歸類完美版) */}
                             <div className="flex border-b border-slate-100 dark:border-slate-850 bg-slate-50/50 dark:bg-slate-900/50 p-1.5 shrink-0 no-select">
                                 {['all', 'stock', 'etf', 'us'].map(tab => (
-                                    <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-1 text-xs font-semibold rounded-md transition-all ${activeTab === tab ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+                                    <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-1 text-xs font-semibold rounded-md transition-all ${activeTab === tab ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-850"}`}>
                                         {tab === 'all' ? '全部' : tab === 'stock' ? '個股' : tab === 'etf' ? 'ETF' : '美股'}
                                     </button>
                                 ))}
@@ -843,9 +850,12 @@
                                             style={{ backgroundColor: isActive ? 'rgba(79, 70, 229, 0.08)' : '' }}
                                         >
                                             <div className="flex items-center">
-                                                {/* 手指長按拖曳把手：加上 drag-handle-trigger 以便 native 觸控阻斷監聽 */}
+                                                {/* 手指與滑鼠拖曳把手：加上 drag-handle-trigger 以便 native 指針捕獲監聽 */}
                                                 <div 
-                                                    className="drag-handle-trigger mr-3 p-1.5 text-slate-300 dark:text-slate-600 hover:text-indigo-500 cursor-grab active:cursor-grabbing select-none"
+                                                    onPointerDown={(e) => handlePointerDown(e, index)}
+                                                    onPointerMove={handlePointerMove}
+                                                    onPointerUp={handlePointerUp}
+                                                    className="drag-handle-trigger mr-3 p-1.5 text-slate-300 dark:text-slate-600 hover:text-indigo-500 cursor-grab active:cursor-grabbing select-none touch-none"
                                                     title="按住拖曳排序"
                                                 >
                                                     <Icons.DragHandle />
@@ -891,19 +901,65 @@
                                     {/* 即時報價大牌卡 */}
                                     <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-850 shadow-xs select-none">
                                         <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
-                                            <div>
-                                                <div className="flex items-center gap-1.5">
-                                                    <h2 className="text-xl font-black text-slate-800 dark:text-white tracking-wide">{activeStockInfo.name}</h2>
+                                            <div className="w-full md:w-auto">
+                                                {/* 🌟 股票名稱即時編輯區：雙按或點選按鈕即可一鍵編輯，拒絕「自選(XX)」困擾 */}
+                                                {isEditingName ? (
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <input 
+                                                            type="text" 
+                                                            value={editedName} 
+                                                            onChange={(e) => setEditedName(e.target.value)} 
+                                                            className="px-2 py-1 text-sm bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-white focus:outline-none font-bold"
+                                                            autoFocus
+                                                        />
+                                                        <button 
+                                                            onClick={() => {
+                                                                setWatchlist(prev => prev.map(item => item.symbol === selectedSymbol ? { ...item, name: editedName } : item));
+                                                                setIsEditingName(false);
+                                                                triggerToast("✏️ 觀察名稱已成功更新");
+                                                                // 即時同步雲端
+                                                                setTimeout(() => {
+                                                                    if (cloudSyncEnabled) syncToCloud(watchlistRef.current);
+                                                                }, 100);
+                                                            }} 
+                                                            className="px-2 py-1 text-xs bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-lg transition"
+                                                        >
+                                                            儲存
+                                                        </button>
+                                                        <button 
+                                                            onClick={() => setIsEditingName(false)} 
+                                                            className="px-2 py-1 text-xs bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-300 rounded-lg"
+                                                        >
+                                                            取消
+                                                        </button>
+                                                    </div>
+                                                ) : (
+                                                    <div className="flex items-center gap-2 mb-1">
+                                                        <h2 className="text-xl font-black text-slate-800 dark:text-white tracking-wide">{activeStockInfo.name}</h2>
+                                                        <button 
+                                                            onClick={() => {
+                                                                setEditedName(activeStockInfo.name);
+                                                                setIsEditingName(true);
+                                                            }}
+                                                            className="p-1 hover:bg-slate-200 dark:hover:bg-slate-700 rounded text-slate-400 dark:text-slate-500 transition-colors"
+                                                            title="自定義股票名稱"
+                                                        >
+                                                            ✏️
+                                                        </button>
+                                                    </div>
+                                                )}
+                                                
+                                                <div className="flex items-center gap-2 mt-1">
                                                     <span className="text-xs font-bold bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md">
                                                         {selectedSymbol}
                                                     </span>
                                                 </div>
                                                 {activeStockInfo.note && (
-                                                    <p className="text-xs text-slate-400 mt-1 truncate max-w-sm">📝 備忘：{activeStockInfo.note}</p>
+                                                    <p className="text-xs text-slate-400 mt-2 truncate max-w-sm">📝 備忘：{activeStockInfo.note}</p>
                                                 )}
                                             </div>
 
-                                            <div className="flex items-baseline gap-2.5 font-mono">
+                                            <div className="flex items-baseline gap-2.5 font-mono ml-auto md:ml-0">
                                                 <div className="text-2xl font-black tracking-tight text-slate-800 dark:text-white">
                                                     {safeToFixed(selectedQuote?.price)}
                                                 </div>
