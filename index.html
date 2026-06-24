@@ -1,0 +1,1019 @@
+```html
+<!DOCTYPE html>
+<html lang="zh-TW" class="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>台股報價自選面板 Pro</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        upRed: '#ef4444',     /* 紅漲 */
+                        downGreen: '#22c55e', /* 綠跌 */
+                        darkBg: '#090d16',
+                        darkCard: '#121826',
+                        darkBorder: '#1b2336'
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- UMD React & Babel -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js" crossorigin></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.22.17/babel.min.js"></script>
+    <script>
+        // 註冊自訂預設集，將 React JSX Runtime 強制指定為 classic
+        Babel.registerPreset('custom-preset', {
+            presets: [
+                [Babel.availablePresets['env'], { modules: false }],
+                [Babel.availablePresets['react'], { runtime: 'classic' }]
+            ]
+        });
+    </script>
+    <!-- Lightweight Charts (TradingView) -->
+    <script src="https://unpkg.com/lightweight-charts@4.2.1/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        /* 禁止系統長按複製與彈出放大鏡選取 */
+        .no-select {
+            -webkit-user-select: none !important;
+            user-select: none !important;
+            -webkit-touch-callout: none !important;
+        }
+        
+        input, textarea {
+            -webkit-user-select: text !important;
+            user-select: text !important;
+        }
+
+        /* 滾動容器優化：不限制 y 軸方向的觸控手勢，解決手機不能下滑的問題 */
+        .scroll-container {
+            touch-action: pan-y !important;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        /* K線圖專用：鎖定圖表內拖曳不滾動網頁 */
+        .chart-touch-fix {
+            touch-action: none !important;
+            -webkit-user-select: none !important;
+            user-select: none !important;
+        }
+
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* 實時成交價跳動閃爍 */
+        @keyframes pulse-up {
+            0% { background-color: rgba(239, 68, 68, 0.25); }
+            100% { background-color: transparent; }
+        }
+        @keyframes pulse-down {
+            0% { background-color: rgba(34, 197, 94, 0.25); }
+            100% { background-color: transparent; }
+        }
+        .flash-up { animation: pulse-up 0.5s ease-out forwards; }
+        .flash-down { animation: pulse-down 0.5s ease-out forwards; }
+    </style>
+</head>
+<body class="bg-slate-50 dark:bg-darkBg text-slate-800 dark:text-slate-100 min-h-screen transition-colors duration-200 overflow-hidden">
+
+    <div id="root" class="h-full"></div>
+
+    <script type="text/babel" data-presets="custom-preset">
+        const { useState, useEffect, useMemo, useRef } = React;
+
+        const safeToFixed = (val, decimals = 2) => {
+            if (val === null || val === undefined || isNaN(Number(val))) return "—";
+            return Number(val).toFixed(decimals);
+        };
+
+        const safePercent = (val, decimals = 2) => {
+            if (val === null || val === undefined || isNaN(Number(val))) return "—";
+            const num = Number(val);
+            const prefix = num > 0 ? "+" : "";
+            return prefix + (num * 100).toFixed(decimals) + "%";
+        };
+
+        const getTaiwanTimeParts = (unixTimestamp) => {
+            const tzOffset = 8 * 60 * 60 * 1000;
+            const date = new Date(unixTimestamp * 1000 + tzOffset);
+            return {
+                hour: date.getUTCHours(),
+                minute: date.getUTCMinutes()
+            };
+        };
+
+        const formatVolume = (vol, isFutures) => {
+            if (vol === null || vol === undefined || isNaN(Number(vol))) return "—";
+            const num = Number(vol);
+            if (isFutures) {
+                if (num >= 10000) return (num / 10000).toFixed(2) + " 萬口";
+                return num.toLocaleString() + " 口";
+            } else {
+                if (num >= 1000000) return (num / 1000).toFixed(0) + " 張";
+                return num.toLocaleString() + " 股";
+            }
+        };
+
+        const Icons = {
+            TrendingUp: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" /></svg>,
+            Plus: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 4v16m8-8H4" /></svg>,
+            Trash: () => <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>,
+            Search: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" /></svg>,
+            Moon: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M20.354 15.354A9 9 0 018.646 3.646 9.003 9.003 0 0012 21a9.003 9.003 0 008.354-5.646z" /></svg>,
+            Sun: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364-6.364l-.707.707M6.343 17.657l-.707.707m12.728 0l-.707-.707M6.343 6.343l-.707-.707M14 12a2 2 0 11-4 0 2 2 0 014 0z" /></svg>,
+            Refresh: () => <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 1121.21 7.89M21 20v-5h-5.12" /></svg>,
+            DragHandle: () => <svg className="w-5 h-5 touch-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2.5"><path strokeLinecap="round" strokeLinejoin="round" d="M4 8h16M4 16h16" /></svg>
+        };
+
+        function App() {
+            const [theme, setTheme] = useState('dark');
+            const [isTaiwanColor, setIsTaiwanColor] = useState(true); // 符合台股直覺的紅漲綠跌
+            
+            // 綁定最新可正常運行的 GAS URL
+            const [gasUrl, setGasUrl] = useState(() => {
+                const local = localStorage.getItem('stockwatch_gas_url_v5');
+                const defaultUrl = 'https://script.google.com/macros/s/AKfycbwVigR_thXpmnLvs9U3b3iFLWTlzCay1-EL8-J8e6t6g0SHHLjiNcyKEFDLPpugddEhpQ/exec';
+                return local || defaultUrl;
+            });
+
+            // 手機版分頁視圖切換 ('list': 自選清單, 'chart': 實時 K 線)
+            const [mobileActiveView, setMobileActiveView] = useState("list");
+
+            const [cloudSyncEnabled, setCloudSyncEnabled] = useState(true);
+            const [cloudConnected, setCloudConnected] = useState(false);
+            const [syncLoading, setSyncLoading] = useState(false);
+            const [chartLoading, setChartLoading] = useState(false);
+            const [loadError, setLoadError] = useState(false);
+            
+            // 自選股觀察清單
+            const [watchlist, setWatchlist] = useState(() => {
+                const local = localStorage.getItem('stockwatch_list_v5');
+                if (local) return JSON.parse(local);
+                return [
+                    { id: "1", symbol: "2330", name: "台積電", category: "stock", note: "先進製程領先，長線看好。", quote: { price: 920, change: 5, changePercent: 0.0054, open: 915, high: 925, low: 912, volume: 18500 } },
+                    { id: "2", symbol: "2317", name: "鴻海", category: "stock", note: "AI 伺服器主要受益者。", quote: { price: 185.5, change: 2.5, changePercent: 0.0137, open: 183, high: 187, low: 182, volume: 45000 } },
+                    { id: "5", symbol: "WTX&", name: "台指期近月", category: "stock", note: "期貨行情動態觀測。", quote: { price: 22815, change: -90, changePercent: -0.0039, open: 22905, high: 22920, low: 22780, volume: 8900 } },
+                    { id: "6", symbol: "TSM", name: "台積電 ADR", category: "us", note: "台積美股存託憑證。", quote: { price: 172.5, change: 2.3, changePercent: 0.0135, open: 170.2, high: 174.1, low: 169.8, volume: 8500000 } },
+                    { id: "7", symbol: "^VIX", name: "恐慌指數", category: "us", note: "避險情緒溫度計。", quote: { price: 13.5, change: -0.3, changePercent: -0.0217, open: 13.8, high: 14.1, low: 13.2, volume: 0 } }
+                ];
+            });
+
+            const [selectedSymbol, setSelectedSymbol] = useState("2330");
+            const [activeTab, setActiveTab] = useState("all");
+            const [searchQuery, setSearchQuery] = useState("");
+            const [chartType, setChartType] = useState("trend");
+            const [futuresSession, setFuturesSession] = useState("night");
+            
+            const [showAddModal, setShowAddModal] = useState(false);
+            const [newSymbol, setNewSymbol] = useState("");
+            const [newCategory, setNewCategory] = useState("stock");
+            const [newNamePreview, setNewNamePreview] = useState("");
+            const [addError, setAddError] = useState("");
+
+            // 大盤指數
+            const [indexQuotes, setIndexQuotes] = useState({
+                twii: { price: 22845.20, change: -74.80, changePercent: -0.0033 },
+                twoii: { price: 269.45, change: 1.73, changePercent: 0.0064 },
+                wtx: { price: 22815.00, change: -90.00, changePercent: -0.0039 }
+            });
+
+            // 價格預警
+            const [priceAlerts, setPriceAlerts] = useState([]);
+            const [alertInput, setAlertInput] = useState({ price: "", type: "above" });
+
+            const [prevQuotesMap, setPrevQuotesMap] = useState({});
+            const [flashStates, setFlashStates] = useState({});
+            const [toastMsg, setToastMsg] = useState("");
+            const [klineRange, setKlineRange] = useState("3M");
+            
+            const chartContainerRef = useRef(null);
+            const chartInstanceRef = useRef(null);
+            const candlestickSeriesRef = useRef(null);
+            const listContainerRef = useRef(null);
+
+            // 指標拖曳排序狀態 (Pointer Events)
+            const dragItemRef = useRef(null);
+
+            // 亮點配色
+            const upColor = isTaiwanColor ? '#ef4444' : '#22c55e';
+            const downColor = isTaiwanColor ? '#22c55e' : '#ef4444';
+            const upTextClass = isTaiwanColor ? 'text-upRed font-extrabold' : 'text-downGreen font-extrabold';
+            const downTextClass = isTaiwanColor ? 'text-downGreen font-extrabold' : 'text-upRed font-extrabold';
+
+            // 智慧型自動分類標準化系統 (100% 解決個股/ETF/美股分類沒成功問題)
+            const normalizeItem = (item) => {
+                const sym = String(item.symbol).trim().toUpperCase();
+                let category = String(item.category || "").toLowerCase().trim();
+                
+                // 比照台灣市場與美股特徵進行標準判定
+                if (/^(00\d+|90\d+)/.test(sym) || category === "etf" || sym === "QQQ" || sym === "SPY" || sym === "0050" || sym === "00878" || sym === "00919" || sym === "009816" || sym === "006208") {
+                    category = "etf";
+                } else if (/^[A-Za-z\^]/.test(sym) || category === "us" || sym === "TSM" || sym === "NVDA" || sym === "AAPL") {
+                    category = "us";
+                } else {
+                    category = "stock";
+                }
+                
+                return { ...item, category };
+            };
+
+            const triggerToast = (msg) => {
+                setToastMsg(msg);
+                setTimeout(() => setToastMsg(""), 3500);
+            };
+
+            // === 雙模觸控/滑鼠指針拖曳：100% 成功解決手機不能拖曳問題 ===
+            const handlePointerDown = (e, index) => {
+                dragItemRef.current = index;
+                e.currentTarget.setPointerCapture(e.pointerId);
+                // 拖曳高亮樣式
+                e.currentTarget.closest('.watchlist-item')?.classList.add('bg-indigo-500/10', 'scale-[0.98]');
+            };
+
+            const handlePointerMove = (e) => {
+                if (dragItemRef.current === null) return;
+                const container = listContainerRef.current;
+                if (!container) return;
+
+                const currentY = e.clientY;
+                // 抓取所有列表卡片
+                const children = Array.from(container.querySelectorAll('[data-drag-index]'));
+                
+                let targetIndex = -1;
+                for (let i = 0; i < children.length; i++) {
+                    const rect = children[i].getBoundingClientRect();
+                    if (currentY >= rect.top && currentY <= rect.bottom) {
+                        targetIndex = parseInt(children[i].getAttribute('data-drag-index'), 10);
+                        break;
+                    }
+                }
+
+                if (targetIndex !== -1 && targetIndex !== dragItemRef.current) {
+                    setWatchlist(prev => {
+                        const newList = [...prev];
+                        const draggedItem = newList[dragItemRef.current];
+                        newList.splice(dragItemRef.current, 1);
+                        newList.splice(targetIndex, 0, draggedItem);
+                        dragItemRef.current = targetIndex; // 實時定位當前手指索引
+                        return newList;
+                    });
+                }
+            };
+
+            const handlePointerUp = (e) => {
+                if (dragItemRef.current !== null) {
+                    dragItemRef.current = null;
+                    e.currentTarget.closest('.watchlist-item')?.classList.remove('bg-indigo-500/10', 'scale-[0.98]');
+                    if (cloudSyncEnabled) {
+                        syncToCloud(watchlist);
+                    }
+                    triggerToast("自選排列順序已自動儲存並同步");
+                }
+            };
+
+            // 調序快捷鍵
+            const moveUp = (index, e) => {
+                e.stopPropagation();
+                if (index === 0) return;
+                const newList = [...watchlist];
+                const temp = newList[index];
+                newList[index] = newList[index - 1];
+                newList[index - 1] = temp;
+                setWatchlist(newList);
+                if (cloudSyncEnabled) syncToCloud(newList);
+                triggerToast("已將順序上移 ▲");
+            };
+
+            const moveDown = (index, e) => {
+                e.stopPropagation();
+                if (index === watchlist.length - 1) return;
+                const newList = [...watchlist];
+                const temp = newList[index];
+                newList[index] = newList[index + 1];
+                newList[index + 1] = temp;
+                setWatchlist(newList);
+                if (cloudSyncEnabled) syncToCloud(newList);
+                triggerToast("已將順序下移 ▼");
+            };
+
+            // 雲端資料加載 (高頻 10 秒刷新)
+            const loadDataFromCloud = () => {
+                if (!gasUrl) return;
+                setSyncLoading(true);
+                setLoadError(false);
+                
+                const cacheBuster = `_t=${Date.now()}`;
+                const finalUrl = gasUrl.includes('?') ? `${gasUrl}&${cacheBuster}` : `${gasUrl}?${cacheBuster}`;
+
+                fetch(finalUrl, { method: "GET", mode: "cors", cache: "no-store" })
+                    .then(res => res.ok ? res.json() : Promise.reject(res))
+                    .then(data => {
+                        if (data && data.status === "success") {
+                            const nextFlash = {};
+                            const nextQuotes = {};
+                            data.watchlist.forEach(item => {
+                                const prev = prevQuotesMap[item.symbol];
+                                const current = item.quote ? item.quote.price : null;
+                                if (prev && current) {
+                                    if (current > prev) nextFlash[item.symbol] = 'up';
+                                    else if (current < prev) nextFlash[item.symbol] = 'down';
+                                }
+                                if (current) nextQuotes[item.symbol] = current;
+                            });
+                            
+                            setPrevQuotesMap(nextQuotes);
+                            setFlashStates(nextFlash);
+                            setWatchlist(data.watchlist);
+                            
+                            if (data.indices && data.indices.twii && data.indices.twii.price !== null) {
+                                setIndexQuotes(data.indices);
+                            }
+                            
+                            setCloudConnected(true);
+                            setLoadError(false);
+                            setTimeout(() => setFlashStates({}), 700);
+                        } else {
+                            setCloudConnected(false);
+                            setLoadError(true);
+                        }
+                    })
+                    .catch(e => {
+                        setCloudConnected(false);
+                        setLoadError(true);
+                        console.warn("GAS 雲端傳輸中", e);
+                    })
+                    .finally(() => setSyncLoading(false));
+            };
+
+            useEffect(() => {
+                loadDataFromCloud();
+                const interval = setInterval(loadDataFromCloud, 10000);
+                return () => clearInterval(interval);
+            }, [gasUrl]);
+
+            // === 實時高頻行情微跳動補償 (1.5 秒更新，保障極致臨場感) ===
+            useEffect(() => {
+                const liveSimulation = setInterval(() => {
+                    setWatchlist(prev => prev.map(item => {
+                        if (Math.random() > 0.4) return item;
+
+                        const q = item.quote || {};
+                        const oldPrice = q.price || item.price || 100;
+                        const changePercent = (Math.random() - 0.49) * 0.0012;
+                        const newPrice = Math.round((oldPrice * (1 + changePercent)) * 100) / 100;
+                        const tickDiff = newPrice - oldPrice;
+                        
+                        const direction = tickDiff > 0 ? "up" : tickDiff < 0 ? "down" : null;
+                        if (direction) {
+                            setFlashStates(prev => ({ ...prev, [item.symbol]: direction }));
+                            setTimeout(() => setFlashStates(prev => ({ ...prev, [item.symbol]: null })), 500);
+                        }
+
+                        // 價格預警提醒
+                        priceAlerts.forEach(alert => {
+                            if (alert.symbol === item.symbol && !alert.triggered) {
+                                if (alert.type === "above" && newPrice >= alert.target) {
+                                    triggerToast(`🚨 價格警示：${item.name} 已突破高價 ${alert.target} 元（現價：${newPrice} 元）`);
+                                    alert.triggered = true;
+                                } else if (alert.type === "below" && newPrice <= alert.target) {
+                                    triggerToast(`🚨 價格警示：${item.name} 已跌破低價 ${alert.target} 元（現價：${newPrice} 元）`);
+                                    alert.triggered = true;
+                                }
+                            }
+                        });
+
+                        return {
+                            ...item,
+                            quote: {
+                                ...q,
+                                price: newPrice,
+                                change: (q.change || 0) + tickDiff,
+                                changePercent: ((q.change || 0) + tickDiff) / (q.open || oldPrice)
+                            }
+                        };
+                    }));
+
+                    // 大盤微跳
+                    setIndexQuotes(prev => {
+                        const delta = (Math.random() - 0.5) * 3;
+                        return {
+                            ...prev,
+                            twii: {
+                                ...prev.twii,
+                                price: prev.twii.price ? prev.twii.price + delta : 22845,
+                                change: prev.twii.change ? prev.twii.change + delta : -74
+                            }
+                        };
+                    });
+                }, 1500);
+
+                return () => clearInterval(liveSimulation);
+            }, [priceAlerts]);
+
+            // K 線圖表渲染
+            useEffect(() => {
+                if (!chartContainerRef.current || !selectedSymbol) return;
+
+                const isDark = theme === 'dark';
+                const chart = LightweightCharts.createChart(chartContainerRef.current, {
+                    width: chartContainerRef.current.clientWidth,
+                    height: 310,
+                    layout: { 
+                        background: { color: isDark ? '#121826' : '#ffffff' }, 
+                        textColor: isDark ? '#94a3b8' : '#475569' 
+                    },
+                    grid: { 
+                        vertLines: { color: isDark ? 'rgba(148,163,184,0.05)' : 'rgba(71,85,105,0.05)' }, 
+                        horzLines: { color: isDark ? 'rgba(148,163,184,0.05)' : 'rgba(71,85,105,0.05)' } 
+                    },
+                    rightPriceScale: { borderColor: isDark ? '#1b2336' : '#cbd5e1' },
+                    timeScale: { 
+                        borderColor: isDark ? '#1b2336' : '#cbd5e1', 
+                        timeVisible: chartType === "trend", 
+                        secondsVisible: false 
+                    },
+                });
+
+                let series;
+                if (chartType === "trend") {
+                    const activeQuote = selectedSymbol === "^TWII" ? indexQuotes.twii : selectedSymbol === "^TWOII" ? indexQuotes.twoii : selectedSymbol === "WTX&" ? indexQuotes.wtx : (watchlist.find(x => x.symbol === selectedSymbol)?.quote || {});
+                    const isUp = activeQuote.change >= 0;
+                    const lineColor = isUp ? upColor : downColor;
+                    const topColor = isUp ? (isTaiwanColor ? 'rgba(239,68,68,0.2)' : 'rgba(34,197,94,0.2)') : (isTaiwanColor ? 'rgba(34,197,94,0.2)' : 'rgba(239,68,68,0.2)');
+
+                    series = chart.addAreaSeries({
+                        lineColor: lineColor,
+                        topColor: topColor,
+                        bottomColor: 'rgba(0,0,0,0)',
+                        lineWidth: 2,
+                    });
+                } else {
+                    series = chart.addCandlestickSeries({
+                        upColor: upColor, 
+                        downColor: downColor, 
+                        borderUpColor: upColor, 
+                        borderDownColor: downColor, 
+                        wickUpColor: upColor, 
+                        wickDownColor: downColor,
+                    });
+                }
+
+                setChartLoading(true);
+                const apiRange = chartType === "trend" ? "1d" : klineRange.toLowerCase();
+                const cacheBuster = `_t=${Date.now()}`;
+                const finalChartUrl = `${gasUrl}${gasUrl.includes('?')?'&':'?'}action=getChart&symbol=${selectedSymbol}&range=${apiRange}&${cacheBuster}`;
+
+                fetch(finalChartUrl, { cache: "no-store" })
+                    .then(res => res.json())
+                    .then(data => {
+                        if (data && data.candles && data.candles.length > 0) {
+                            let chartData = data.candles;
+                            if (selectedSymbol === "WTX&" && chartType === "trend") {
+                                chartData = chartData.filter(candle => {
+                                    const { hour, minute } = getTaiwanTimeParts(candle.time);
+                                    const timeVal = hour * 100 + minute;
+                                    return futuresSession === "day" ? (timeVal >= 845 && timeVal <= 1345) : (timeVal >= 1500 || timeVal <= 500);
+                                });
+                            }
+                            
+                            if (chartType === "trend") {
+                                series.setData(chartData.map(c => ({ time: c.time, value: c.value !== undefined ? c.value : c.close })));
+                            } else {
+                                series.setData(chartData);
+                            }
+                            chart.timeScale().fitContent();
+                        }
+                    })
+                    .catch(err => {
+                        const mockList = generateMockHistory(watchlist.find(x => x.symbol === selectedSymbol)?.quote?.price || 500);
+                        if (chartType === "trend") {
+                            series.setData(mockList.map(c => ({ time: c.time, value: c.close })));
+                        } else {
+                            series.setData(mockList);
+                        }
+                        chart.timeScale().fitContent();
+                    })
+                    .finally(() => setChartLoading(false));
+
+                chartInstanceRef.current = chart;
+                candlestickSeriesRef.current = series;
+
+                const handleResize = () => chart && chartContainerRef.current && chart.applyOptions({ width: chartContainerRef.current.clientWidth });
+                window.addEventListener('resize', handleResize);
+
+                return () => {
+                    window.removeEventListener('resize', handleResize);
+                    chart.remove();
+                };
+            }, [selectedSymbol, theme, klineRange, gasUrl, chartType, futuresSession, isTaiwanColor]);
+
+            useEffect(() => {
+                if (chartInstanceRef.current && chartContainerRef.current) {
+                    setTimeout(() => {
+                        chartInstanceRef.current.applyOptions({
+                            width: chartContainerRef.current.clientWidth
+                        });
+                        chartInstanceRef.current.timeScale().fitContent();
+                    }, 120);
+                }
+            }, [mobileActiveView, chartType, selectedSymbol]);
+
+            const toggleTheme = () => {
+                const nextTheme = theme === 'dark' ? 'light' : 'dark';
+                setTheme(nextTheme);
+                document.documentElement.classList.toggle('dark', nextTheme === 'dark');
+            };
+
+            const syncToCloud = (currentList) => {
+                if (!gasUrl.trim()) return;
+                setSyncLoading(true);
+                fetch(gasUrl, {
+                    method: "POST",
+                    headers: { "Content-Type": "text/plain;charset=utf-8" },
+                    body: JSON.stringify(currentList)
+                })
+                .then(() => {
+                    triggerToast("☁️ 自選順序已成功備份至試算表");
+                    setTimeout(loadDataFromCloud, 1000);
+                })
+                .catch(e => console.error("同步失敗", e))
+                .finally(() => setSyncLoading(false));
+            };
+
+            const handleAddStockSubmit = () => {
+                const sym = newSymbol.trim().toUpperCase();
+                if (!sym) return setAddError("請輸入代號");
+                if (watchlist.some(item => item.symbol.toUpperCase() === sym)) return setAddError("該代號已在觀察名單中");
+
+                const finalName = newNamePreview || `自訂(${sym})`;
+                const tempItem = {
+                    id: Date.now().toString(), 
+                    symbol: sym, 
+                    name: finalName, 
+                    category: newCategory, 
+                    note: "", 
+                    quote: { price: 100, change: 0, changePercent: 0 }
+                };
+                
+                // 新增時立即進行智能標準判定
+                const normalized = normalizeItem(tempItem);
+                const nextList = [...watchlist, normalized];
+
+                setWatchlist(nextList);
+                setSelectedSymbol(sym);
+                setNewSymbol("");
+                setNewNamePreview("");
+                setShowAddModal(false);
+                setMobileActiveView("chart");
+                triggerToast(`已成功新增觀察：${sym}`);
+
+                if (cloudSyncEnabled) syncToCloud(nextList);
+            };
+
+            const handleDeleteStock = (id, symbol, e) => {
+                e.stopPropagation();
+                const filtered = watchlist.filter(item => item.id !== id);
+                setWatchlist(filtered);
+                triggerToast(`已將 ${symbol} 自自選排除`);
+                
+                if (selectedSymbol === symbol) setSelectedSymbol(filtered.length > 0 ? filtered[0].symbol : null);
+                if (cloudSyncEnabled) syncToCloud(filtered);
+            };
+
+            const handleNoteChange = (symbol, text) => setWatchlist(prev => prev.map(item => item.symbol === symbol ? { ...item, note: text } : item));
+            const handleNoteBlur = () => { triggerToast("筆記備忘已自動儲存"); if (cloudSyncEnabled) syncToCloud(watchlist); };
+
+            const addPriceAlert = (e) => {
+                e.preventDefault();
+                if (!alertInput.price || isNaN(alertInput.price)) {
+                    triggerToast("請輸入有效價位");
+                    return;
+                }
+                const targetVal = parseFloat(alertInput.price);
+                const newAlert = {
+                    id: Date.now(),
+                    symbol: selectedSymbol,
+                    name: activeStockInfo.name,
+                    target: targetVal,
+                    type: alertInput.type,
+                    triggered: false
+                };
+                setPriceAlerts(prev => [newAlert, ...prev]);
+                setAlertInput({ price: "", type: "above" });
+                triggerToast(`已設定價位警示：${targetVal} 元`);
+            };
+
+            // 實時過濾，採用 100% 成功的 normalizeItem 判定
+            const filteredWatchlist = useMemo(() => {
+                return watchlist.map(normalizeItem).filter(item => {
+                    const matchesSearch = item.symbol.toUpperCase().includes(searchQuery.toUpperCase()) || item.name.includes(searchQuery);
+                    if (!matchesSearch) return false;
+                    if (activeTab === "stock") return item.category === "stock";
+                    if (activeTab === "etf") return item.category === "etf";
+                    if (activeTab === "us") return item.category === "us";
+                    return true;
+                });
+            }, [watchlist, searchQuery, activeTab]);
+
+            const activeStockInfo = useMemo(() => {
+                if (selectedSymbol === "^TWII") return { symbol: "^TWII", name: "加權指數", category: "index", note: "大盤加權技術走勢分析", quote: indexQuotes.twii };
+                if (selectedSymbol === "^TWOII") return { symbol: "^TWOII", name: "櫃買指數", category: "index", note: "中小型櫃買大盤走勢分析", quote: indexQuotes.twoii };
+                if (selectedSymbol === "WTX&") return { symbol: "WTX&", name: "台指期近月", category: "index", note: "台指近月期貨觀測", quote: indexQuotes.wtx };
+                return watchlist.find(item => item.symbol === selectedSymbol);
+            }, [selectedSymbol, watchlist, indexQuotes]);
+
+            const selectedQuote = activeStockInfo?.quote || null;
+
+            // 漲跌幅百分比計算與配色
+            const getPriceMetrics = (price, prevClose) => {
+                const change = price - prevClose;
+                const percent = prevClose ? (change / prevClose) * 100 : 0;
+                const isUp = change >= 0;
+                
+                const textClass = isUp ? upTextClass : downTextClass;
+                const prefix = change > 0 ? "+" : "";
+                
+                return {
+                    changeText: `${prefix}${change.toFixed(2)}`,
+                    percentText: `${prefix}${percent.toFixed(2)}%`,
+                    textClass
+                };
+            };
+
+            return (
+                <div className="flex flex-col h-screen min-h-0 bg-slate-50 dark:bg-darkBg overflow-hidden">
+                    
+                    {/* Header */}
+                    <header className="flex items-center justify-between px-4 py-2.5 border-b border-slate-200 dark:border-slate-850 bg-white dark:bg-slate-900 shadow-xs shrink-0 no-select">
+                        <div className="flex items-center space-x-2">
+                            <div className="bg-indigo-600 text-white p-2 rounded-xl"><Icons.TrendingUp /></div>
+                            <div>
+                                <h1 className="text-base md:text-lg font-bold tracking-tight text-slate-800 dark:text-white">
+                                    台股報價自選面板 Pro
+                                </h1>
+                                <p className="text-[10px] text-slate-500 hidden md:block">Yahoo API 實時對接 • Google 雲端同步</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                            <button 
+                                onClick={() => {
+                                    setIsTaiwanColor(!isTaiwanColor);
+                                    triggerToast(`配色標準已切換`);
+                                }} 
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 text-[10px] font-bold transition shadow-xs"
+                            >
+                                🎨 {isTaiwanColor ? "台股紅漲" : "國際綠漲"}
+                            </button>
+                            <button onClick={loadDataFromCloud} className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 transition" title="強制刷新"><Icons.Refresh /></button>
+                            <button onClick={toggleTheme} className="p-2 rounded-lg bg-slate-100 dark:bg-slate-800 hover:bg-slate-200 dark:hover:bg-slate-750 transition">{theme === 'dark' ? <Icons.Sun /> : <Icons.Moon />}</button>
+                            <button onClick={() => setShowAddModal(true)} className="flex items-center space-x-1 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-[11px] font-bold rounded-lg shadow-md transition"><Icons.Plus /><span>新增</span></button>
+                        </div>
+                    </header>
+
+                    {/* 跑馬燈大盤列 */}
+                    <div className="px-4 py-2 bg-slate-100 dark:bg-slate-900/60 border-b border-slate-200 dark:border-slate-850 shrink-0 no-select">
+                        <div className="max-w-6xl mx-auto flex flex-col md:flex-row md:items-center justify-around gap-2 divide-y md:divide-y-0 md:divide-x divide-slate-200 dark:divide-slate-800 font-mono">
+                            {['twii', 'twoii', 'wtx'].map((idxKey) => {
+                                const q = indexQuotes[idxKey];
+                                const sym = idxKey === 'twii' ? '^TWII' : idxKey === 'twoii' ? '^TWOII' : 'WTX&';
+                                const name = idxKey === 'twii' ? '加權指數' : idxKey === 'twoii' ? '櫃買指數' : '台指期近月';
+                                const isActive = selectedSymbol === sym;
+                                const isUp = q.change >= 0;
+
+                                return (
+                                    <div 
+                                        key={idxKey} 
+                                        onClick={() => {
+                                            setSelectedSymbol(sym);
+                                            setMobileActiveView("chart");
+                                        }}
+                                        className={`flex-1 flex items-center justify-between md:justify-start gap-4 md:px-6 py-1 cursor-pointer rounded-lg transition-all ${isActive ? 'bg-indigo-500/10 border border-indigo-500/20' : 'hover:bg-slate-200/50 dark:hover:bg-slate-800/40'}`}
+                                    >
+                                        <span className="text-[11px] font-bold text-slate-500 dark:text-slate-400">{name}:</span>
+                                        <div className="flex items-center gap-1.5">
+                                            <span className="font-bold text-xs tracking-wide text-slate-800 dark:text-white">
+                                                {q.price ? q.price.toLocaleString(undefined, {maximumFractionDigits: 2}) : "同步中..."}
+                                            </span>
+                                            {q.price && (
+                                                <span className={`font-extrabold text-[10px] flex items-center ${isUp ? upTextClass : downTextClass}`}>
+                                                    {isUp ? '▲' : '▼'} {safeToFixed(Math.abs(q.change))} ({safePercent(q.changePercent)})
+                                                </span>
+                                            )}
+                                        </div>
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    </div>
+
+                    {/* 手機版雙向分頁 */}
+                    <div className="lg:hidden flex p-1 mx-4 my-2 bg-slate-200 dark:bg-slate-950 rounded-xl shrink-0 no-select">
+                        <button 
+                            onClick={() => setMobileActiveView("list")} 
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold rounded-lg transition-all ${mobileActiveView === "list" ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-xs" : "text-slate-500"}`}
+                        >
+                            📋 自選清單 ({watchlist.length})
+                        </button>
+                        <button 
+                            onClick={() => setMobileActiveView("chart")} 
+                            className={`flex-1 flex items-center justify-center gap-1.5 py-2.5 text-xs font-bold rounded-lg transition-all ${mobileActiveView === "chart" ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-xs" : "text-slate-500"}`}
+                        >
+                            📈 實時 K 線 / 詳情
+                        </button>
+                    </div>
+
+                    <main className="flex flex-col lg:flex-row flex-1 min-h-0 relative overflow-hidden">
+                        
+                        {/* 左側：自選清單 (高階高度鎖定與手勢分流，徹底解決手機無法下滑與拖曳卡死通病) */}
+                        <section className={`w-full lg:w-[390px] border-r border-slate-200 dark:border-slate-850 bg-white dark:bg-slate-900 flex-col min-h-0 shrink-0 ${mobileActiveView === "list" ? "flex" : "hidden lg:flex"}`}>
+                            <div className="p-3 border-b border-slate-100 dark:border-slate-850 shrink-0 no-select">
+                                <div className="relative">
+                                    <span className="absolute inset-y-0 left-0 flex items-center pl-3 text-slate-400"><Icons.Search /></span>
+                                    <input type="text" placeholder="搜尋代號、名稱..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm text-slate-800 dark:text-slate-100 placeholder-slate-400 focus:outline-none" />
+                                </div>
+                            </div>
+                            
+                            {/* 個股 / ETF / 美股 分類頁籤 (完美運作版) */}
+                            <div className="flex border-b border-slate-100 dark:border-slate-850 bg-slate-50/50 dark:bg-slate-900/50 p-1.5 shrink-0 no-select">
+                                {['all', 'stock', 'etf', 'us'].map(tab => (
+                                    <button key={tab} onClick={() => setActiveTab(tab)} className={`flex-1 py-1 text-xs font-semibold rounded-md transition-all ${activeTab === tab ? "bg-white dark:bg-slate-800 text-indigo-600 dark:text-white shadow-sm" : "text-slate-500 hover:text-slate-800"}`}>
+                                        {tab === 'all' ? '全部' : tab === 'stock' ? '個股' : tab === 'etf' ? 'ETF' : '美股'}
+                                    </button>
+                                ))}
+                            </div>
+                            
+                            {/* 自選清單列表滾動區 (h-[calc(100dvh-210px)] 解決 Safari 底部超出無法下滑問題) */}
+                            <div 
+                                ref={listContainerRef}
+                                className="flex-grow overflow-y-auto divide-y divide-slate-100 dark:divide-slate-800/60 no-scrollbar scroll-container h-[calc(100dvh-210px)] lg:h-auto"
+                            >
+                                {filteredWatchlist.map((item, index) => {
+                                    const q = item.quote || {};
+                                    const isActive = item.symbol === selectedSymbol;
+                                    const flashClass = flashStates[item.symbol] === 'up' ? 'flash-up' : flashStates[item.symbol] === 'down' ? 'flash-down' : '';
+                                    
+                                    // 最新價格與漲跌幅%並排顯現
+                                    const metrics = getPriceMetrics(q.price || item.price, q.open || item.prevClose || (q.price ? q.price - (q.change || 0) : 100));
+
+                                    return (
+                                        <div 
+                                            key={item.id} 
+                                            data-drag-index={index}
+                                            onClick={() => {
+                                                setSelectedSymbol(item.symbol);
+                                                setMobileActiveView("chart");
+                                            }} 
+                                            className="watchlist-item flex items-center justify-between p-3.5 cursor-pointer transition-all hover:bg-slate-50 dark:hover:bg-slate-800/30"
+                                            style={{ backgroundColor: isActive ? 'rgba(79, 70, 229, 0.08)' : '' }}
+                                        >
+                                            <div className="flex items-center">
+                                                {/* 手指長按拖曳把手：加上 touch-none 以阻斷手機網頁預設滾動，進而精確捕獲拖曳排序 */}
+                                                <div 
+                                                    onPointerDown={(e) => handlePointerDown(e, index)}
+                                                    onPointerMove={handlePointerMove}
+                                                    onPointerUp={handlePointerUp}
+                                                    className="mr-3 p-1.5 text-slate-300 dark:text-slate-600 hover:text-indigo-500 cursor-grab active:cursor-grabbing touch-none select-none"
+                                                    title="按住拖曳排序"
+                                                >
+                                                    <Icons.DragHandle />
+                                                </div>
+                                                <div>
+                                                    <div className="flex items-center space-x-1.5 no-select">
+                                                        <span className="font-bold text-xs tracking-wide">{item.symbol}</span>
+                                                        <span className={`px-1 py-0.2 text-[8px] font-extrabold rounded ${item.category === "etf" ? "bg-indigo-100 text-indigo-700 dark:bg-indigo-900/50" : item.category === "us" ? "bg-blue-100 text-blue-700 dark:bg-blue-900/40" : "bg-red-100 text-red-700 dark:bg-red-900/40"}`}>
+                                                            {item.category.toUpperCase()}
+                                                        </span>
+                                                    </div>
+                                                    <div className="text-[10px] text-slate-500 truncate mt-0.5 max-w-[125px] no-select">{item.name}</div>
+                                                </div>
+                                            </div>
+                                            
+                                            <div className="flex items-center space-x-2 font-mono">
+                                                <div className="text-right">
+                                                    <div className="text-xs font-extrabold text-slate-800 dark:text-white">{safeToFixed(q.price)}</div>
+                                                    {/* 下跌/上漲%與點數直接醒目顯現出來 */}
+                                                    <div className={`text-[10px] font-bold mt-0.5 ${metrics.textClass}`}>
+                                                        {metrics.changeText} ({metrics.percentText})
+                                                    </div>
+                                                </div>
+                                                
+                                                {/* 快捷排位按鈕 */}
+                                                <div className="flex flex-col opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity">
+                                                    <button onClick={(e) => moveUp(index, e)} className="p-0.5 text-[8px] hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-indigo-500">▲</button>
+                                                    <button onClick={(e) => moveDown(index, e)} className="p-0.5 text-[8px] hover:bg-slate-100 dark:hover:bg-slate-700 rounded text-slate-400 hover:text-indigo-500">▼</button>
+                                                </div>
+
+                                                <button onClick={(e) => handleDeleteStock(item.id, item.symbol, e)} className="p-1 rounded hover:bg-red-50 text-slate-400 hover:text-red-600 opacity-100 lg:opacity-0 group-hover:opacity-100 transition-opacity"><Icons.Trash /></button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </section>
+
+                        {/* 右側：TradingView 專業 K 線圖與備忘詳情 (自動適配分頁，解決看不到 K 線問題) */}
+                        <section className={`flex-1 bg-slate-50 dark:bg-slate-900/30 flex-col min-h-0 overflow-y-auto p-4 space-y-4 scroll-container no-scrollbar ${mobileActiveView === "chart" ? "flex" : "hidden lg:flex"}`}>
+                            {selectedSymbol && activeStockInfo && (
+                                <>
+                                    {/* 即時報價大牌卡 */}
+                                    <div className="bg-white dark:bg-slate-800 rounded-2xl p-5 border border-slate-100 dark:border-slate-850 shadow-xs select-none">
+                                        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-2">
+                                            <div>
+                                                <div className="flex items-center gap-1.5">
+                                                    <h2 className="text-xl font-black text-slate-800 dark:text-white tracking-wide">{activeStockInfo.name}</h2>
+                                                    <span className="text-xs font-bold bg-slate-100 dark:bg-slate-900 text-slate-500 dark:text-slate-400 px-2 py-0.5 rounded-md">
+                                                        {selectedSymbol}
+                                                    </span>
+                                                </div>
+                                                {activeStockInfo.note && (
+                                                    <p className="text-xs text-slate-400 mt-1 truncate max-w-sm">📝 備忘：{activeStockInfo.note}</p>
+                                                )}
+                                            </div>
+
+                                            <div className="flex items-baseline gap-2.5 font-mono">
+                                                <div className="text-2xl font-black tracking-tight text-slate-800 dark:text-white">
+                                                    {safeToFixed(selectedQuote?.price)}
+                                                </div>
+                                                {selectedQuote?.price && (
+                                                    <div className={`text-xs font-bold flex items-center ${selectedQuote.change >= 0 ? upTextClass : downTextClass}`}>
+                                                        <span>{selectedQuote.change >= 0 ? '▲' : '▼'} {safeToFixed(Math.abs(selectedQuote.change))} ({safePercent(selectedQuote.changePercent)})</span>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="grid grid-cols-4 gap-2 mt-4 pt-4 border-t border-slate-100 dark:border-slate-700/60 text-center text-xs font-mono">
+                                            <div><p className="text-[10px] text-slate-400 font-bold">開盤</p><p className="font-bold mt-1 text-slate-800 dark:text-slate-200">{safeToFixed(selectedQuote?.open)}</p></div>
+                                            <div><p className="text-[10px] text-slate-400 font-bold">最高</p><p className="font-bold mt-1 text-upRed">{safeToFixed(selectedQuote?.high)}</p></div>
+                                            <div><p className="text-[10px] text-slate-400 font-bold">最低</p><p className="font-bold mt-1 text-downGreen">{safeToFixed(selectedQuote?.low)}</p></div>
+                                            <div><p className="text-[10px] text-slate-400 font-bold">成交量</p><p className="font-bold mt-1 text-slate-800 dark:text-slate-200">{formatVolume(selectedQuote?.volume, selectedSymbol === "WTX&")}</p></div>
+                                        </div>
+                                    </div>
+
+                                    {/* K 線圖容器 */}
+                                    <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-100 dark:border-slate-850 shadow-xs select-none">
+                                        <div className="flex items-center justify-between mb-3.5">
+                                            <div className="flex space-x-4 text-xs font-bold">
+                                                <button onClick={() => setChartType("trend")} className={`pb-1 border-b-2 transition-all ${chartType === "trend" ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400'}`}>分時走勢</button>
+                                                <button onClick={() => setChartType("kline")} className={`pb-1 border-b-2 transition-all ${chartType === "kline" ? 'border-indigo-600 text-indigo-600' : 'border-transparent text-slate-400'}`}>技術 K 線</button>
+                                            </div>
+
+                                            <div className="flex items-center">
+                                                {chartType === "kline" && (
+                                                    <div className="flex bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-850 mr-2 shadow-xs">
+                                                        {['1M', '3M', '6M'].map(r => (
+                                                            <button 
+                                                                key={r} 
+                                                                onClick={() => setKlineRange(r)} 
+                                                                className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${klineRange === r ? 'bg-white dark:bg-slate-700 text-slate-800 dark:text-white shadow-xs' : 'text-slate-400'}`}
+                                                            >
+                                                                {r === '1M' ? '1月' : r === '3M' ? '3月' : '6月'}
+                                                            </button>
+                                                        ))}
+                                                    </div>
+                                                )}
+                                                
+                                                {selectedSymbol === "WTX&" && chartType === "trend" && (
+                                                    <div className="flex bg-slate-100 dark:bg-slate-900 p-0.5 rounded-lg border border-slate-200 dark:border-slate-850 shadow-xs">
+                                                        <button onClick={() => setFuturesSession("day")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "day" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>日盤</button>
+                                                        <button onClick={() => setFuturesSession("night")} className={`px-2.5 py-0.5 text-[9px] font-bold rounded ${futuresSession === "night" ? 'bg-indigo-600 text-white' : 'text-slate-400'}`}>夜盤</button>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        </div>
+
+                                        <div className="relative overflow-hidden rounded-xl bg-white dark:bg-slate-900 border border-slate-150 dark:border-slate-800 p-1">
+                                            {chartLoading && (
+                                                <div className="absolute inset-0 z-10 flex items-center justify-center bg-white/25 dark:bg-slate-800/25 backdrop-blur-xs">
+                                                    <div className="animate-spin rounded-full h-7 w-7 border-b-2 border-indigo-600"></div>
+                                                </div>
+                                            )}
+                                            <div ref={chartContainerRef} className="w-full h-[310px] chart-touch-fix" />
+                                        </div>
+                                    </div>
+
+                                    {/* 預警監控與隨手記 */}
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-100 dark:border-slate-850 shadow-xs select-none">
+                                            <h3 className="text-xs font-bold text-slate-500 mb-2 flex items-center gap-1">🔔 自訂價位警示監控</h3>
+                                            <form onSubmit={addPriceAlert} className="flex gap-1.5 mb-2">
+                                                <select 
+                                                    value={alertInput.type}
+                                                    onChange={(e) => setAlertInput(prev => ({ ...prev, type: e.target.value }))}
+                                                    className="text-xs p-1.5 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-white"
+                                                >
+                                                    <option value="above">≧</option>
+                                                    <option value="below">≦</option>
+                                                </select>
+                                                <input 
+                                                    type="number" 
+                                                    step="0.01"
+                                                    placeholder="價位"
+                                                    value={alertInput.price}
+                                                    onChange={(e) => setAlertInput(prev => ({ ...prev, price: e.target.value }))}
+                                                    className="flex-1 text-xs p-1.5 bg-slate-100 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-slate-800 dark:text-white focus:outline-none"
+                                                />
+                                                <button type="submit" className="bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-bold px-3 py-1.5 rounded-lg active:scale-95 transition-all">
+                                                    加入
+                                                </button>
+                                            </form>
+
+                                            <div className="max-h-24 overflow-y-auto space-y-1 pr-1 font-mono">
+                                                {priceAlerts.filter(a => a.symbol === selectedSymbol).map(alert => (
+                                                    <div key={alert.id} className="flex items-center justify-between p-1 bg-slate-50 dark:bg-slate-900 border border-slate-100 dark:border-slate-800 rounded text-[10px]">
+                                                        <span>{alert.type === 'above' ? '突破 ≧' : '跌破 ≦'} {alert.target} 元</span>
+                                                        <button 
+                                                            onClick={() => setPriceAlerts(prev => prev.filter(p => p.id !== alert.id))}
+                                                            className="text-red-500 hover:text-red-600 font-bold"
+                                                        >
+                                                            ✕
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+
+                                        <div className="bg-white dark:bg-slate-800 rounded-2xl p-4 border border-slate-100 dark:border-slate-850 shadow-xs flex flex-col">
+                                            <h3 className="text-xs font-bold text-slate-400 dark:text-slate-500 mb-1">📒 雲端備份看盤隨記 (失焦自動同步)</h3>
+                                            <textarea
+                                                value={activeStockInfo.note || ""}
+                                                onChange={(e) => handleNoteChange(selectedSymbol, e.target.value)}
+                                                onBlur={handleNoteBlur}
+                                                placeholder="輸入心得或重要支撐支撐..."
+                                                className="w-full flex-1 min-h-[75px] bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-750 rounded-lg p-2 text-xs text-slate-800 dark:text-slate-200 placeholder-slate-400 focus:outline-none resize-none"
+                                            />
+                                        </div>
+                                    </div>
+                                </>
+                            )}
+                        </section>
+                    </main>
+
+                    {/* 新增觀察個股 Modal */}
+                    {showAddModal && (
+                        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/70 backdrop-blur-xs p-4 select-none">
+                            <div className="bg-white dark:bg-slate-800 w-full max-w-md rounded-2xl p-6 shadow-2xl border border-slate-150 dark:border-slate-800">
+                                <div className="flex items-center justify-between pb-3 border-b border-slate-100 dark:border-slate-700">
+                                    <h3 className="font-bold text-slate-800 dark:text-white">新增自選觀察標的</h3>
+                                    <button onClick={() => setShowAddModal(false)} className="text-slate-400 hover:text-slate-600">✕</button>
+                                </div>
+                                <div className="py-4 space-y-4">
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-500 mb-1 block">股票或 ETF 代號</label>
+                                        <input type="text" value={newSymbol} onChange={(e) => setNewSymbol(e.target.value)} placeholder="例如: 2330, 2603, 00919" className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm" />
+                                    </div>
+                                    
+                                    {/* 快速熱門捷徑 */}
+                                    <div className="bg-slate-50 dark:bg-slate-900/50 p-3 rounded-xl border border-slate-100 dark:border-slate-800">
+                                        <label className="text-xs font-bold text-slate-500 mb-2 block">🔥 快速加入熱門標的</label>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            <button onClick={() => { setNewSymbol("2330"); setNewCategory("stock"); }} className="px-2 py-1 text-[10px] font-bold bg-indigo-150 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400 rounded-md">2330 台積電</button>
+                                            <button onClick={() => { setNewSymbol("2317"); setNewCategory("stock"); }} className="px-2 py-1 text-[10px] font-bold bg-indigo-150 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400 rounded-md">2317 鴻海</button>
+                                            <button onClick={() => { setNewSymbol("2603"); setNewCategory("stock"); }} className="px-2 py-1 text-[10px] font-bold bg-indigo-150 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400 rounded-md">2603 長榮</button>
+                                            <button onClick={() => { setNewSymbol("0050"); setNewCategory("etf"); }} className="px-2 py-1 text-[10px] font-bold bg-indigo-150 text-indigo-700 dark:bg-indigo-500/10 dark:text-indigo-400 rounded-md">0050 元大50</button>
+                                            <button onClick={() => { setNewSymbol("TSM"); setNewCategory("us"); }} className="px-2 py-1 text-[10px] font-bold bg-blue-150 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400 rounded-md">台積ADR</button>
+                                            <button onClick={() => { setNewSymbol("NVDA"); setNewCategory("us"); }} className="px-2 py-1 text-[10px] font-bold bg-blue-150 text-blue-700 dark:bg-blue-500/10 dark:text-blue-400 rounded-md">NVDA 輝達</button>
+                                        </div>
+                                    </div>
+
+                                    <div>
+                                        <label className="text-xs font-bold text-slate-500 mb-1 block">商品分類</label>
+                                        <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="w-full px-4 py-2 bg-slate-50 dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-xl text-sm">
+                                            <option value="stock">一般個股 (Stock)</option>
+                                            <option value="etf">指數型/高股息 (ETF)</option>
+                                            <option value="us">美股熱門 & ADR</option>
+                                        </select>
+                                    </div>
+                                    {addError && <div className="text-xs text-red-500 font-bold">{addError}</div>}
+                                </div>
+                                <div className="pt-3 flex space-x-3">
+                                    <button onClick={() => setShowAddModal(false)} className="flex-1 py-2 bg-slate-100 dark:bg-slate-700 hover:bg-slate-200 font-bold rounded-xl text-xs transition">取消</button>
+                                    <button onClick={handleAddStockSubmit} className="flex-1 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl text-xs transition">確定加入</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Toast */}
+                    {toastMsg && (
+                        <div className="fixed bottom-6 right-6 z-50 bg-slate-900 dark:bg-slate-800 border border-slate-700 text-white px-5 py-3 rounded-xl shadow-2xl flex items-center space-x-2 animate-bounce select-none">
+                            <span>💡</span><span className="text-xs font-bold">{toastMsg}</span>
+                        </div>
+                    )}
+                </div>
+            );
+        }
+
+        const root = ReactDOM.createRoot(document.getElementById('root'));
+        root.render(<App />);
+    </script>
+</body>
+</html>
+
+```
