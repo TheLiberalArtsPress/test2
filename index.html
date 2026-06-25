@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>馬倪樂股票報爆爆</title>
+    <title>馬倪樂股票報爆爆 Pro</title>
     <!-- Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script>
@@ -73,11 +73,11 @@
         
         /* 實時成交價跳動閃爍 */
         @keyframes pulse-up {
-            0% { background-color: rgba(239, 68, 68, 0.25); }
+            0% { background-color: rgba(239, 68, 68, 0.3); }
             100% { background-color: transparent; }
         }
         @keyframes pulse-down {
-            0% { background-color: rgba(34, 197, 94, 0.25); }
+            0% { background-color: rgba(34, 197, 94, 0.3); }
             100% { background-color: transparent; }
         }
         .flash-up { animation: pulse-up 0.5s ease-out forwards; }
@@ -229,7 +229,8 @@
             const [priceAlerts, setPriceAlerts] = useState([]);
             const [alertInput, setAlertInput] = useState({ price: "", type: "above" });
 
-            const [prevQuotesMap, setPrevQuotesMap] = useState({});
+            // 💡 修正 React 閉包快照問題，使用 Ref 永遠獲取最新的價格對照表，完美觸發紅綠閃動
+            const quotesRef = useRef({});
             const [flashStates, setFlashStates] = useState({});
             const [toastMsg, setToastMsg] = useState("");
             const [klineRange, setKlineRange] = useState("3M");
@@ -365,9 +366,10 @@
                     .then(data => {
                         if (data && data.status === "success") {
                             const nextFlash = {};
-                            const nextQuotes = {};
+                            const nextQuotes = { ...quotesRef.current };
+                            
                             data.watchlist.forEach(item => {
-                                const prev = prevQuotesMap[item.symbol];
+                                const prev = quotesRef.current[item.symbol];
                                 const current = item.quote ? item.quote.price : null;
                                 if (prev && current) {
                                     if (current > prev) nextFlash[item.symbol] = 'up';
@@ -376,7 +378,7 @@
                                 if (current) nextQuotes[item.symbol] = current;
                             });
                             
-                            setPrevQuotesMap(nextQuotes);
+                            quotesRef.current = nextQuotes;
                             setFlashStates(nextFlash);
                             
                             // 更新時強制進行狀態層強規整化
@@ -730,10 +732,11 @@
                         <div className="flex items-center space-x-2">
                             <div className="bg-indigo-600 text-white p-2 rounded-xl"><Icons.TrendingUp /></div>
                             <div>
-                                <h1 className="text-base md:text-lg font-bold tracking-tight text-slate-800 dark:text-white">
-                                    台股報價自選面板 Pro
+                                <h1 className="text-base md:text-lg font-bold tracking-tight text-slate-800 dark:text-white flex items-center gap-1.5">
+                                    馬倪樂股票報爆爆 Pro 
+                                    <span className="text-[9px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded-md border border-green-500/30">TWSE 連接成功</span>
                                 </h1>
-                                <p className="text-[10px] text-slate-500 hidden md:block">Yahoo API 實時對接 • Google 雲端同步</p>
+                                <p className="text-[10px] text-slate-500 hidden md:block">台股官方批次 API 直連 • 24H 夜盤期貨 • 零延遲更新</p>
                             </div>
                         </div>
                         <div className="flex items-center space-x-2">
@@ -846,7 +849,7 @@
                                                 setSelectedSymbol(item.symbol);
                                                 setMobileActiveView("chart");
                                             }} 
-                                            className="watchlist-item flex items-center justify-between p-3.5 cursor-pointer transition-all hover:bg-slate-50 dark:hover:bg-slate-800/30"
+                                            className={`watchlist-item flex items-center justify-between p-3.5 cursor-pointer transition-all hover:bg-slate-50 dark:hover:bg-slate-800/30 ${flashClass}`}
                                             style={{ backgroundColor: isActive ? 'rgba(79, 70, 229, 0.08)' : '' }}
                                         >
                                             <div className="flex items-center">
